@@ -43,7 +43,7 @@ export interface BattleRoomOptions {
 
 /**
  * Realtimeチャンネルの購読・Presence・イベント送受信を担う通信層。
- * ゲーム進行の判断はしない(useGameMachineの責務)。
+ * ゲーム進行の判断はしない(battleストアの責務)。
  * - 1ルーム = 1チャンネル `room:{code}`
  * - ロビー調停のみホストが権威: join_requestに対し先着1名だけjoin_ack
  */

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BattleResult } from '~/composables/useGameMachine'
+import type { BattleResult } from '~/stores/battle'
 
 const props = defineProps<{
   result: BattleResult

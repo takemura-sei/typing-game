@@ -1,12 +1,14 @@
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { defineStore } from 'pinia'
+import { computed, reactive, ref } from 'vue'
 import type { AttackEvent, GameEvent, GameStartEvent, StateSyncEvent } from '../types/events'
 import { PROTOCOL_VERSION } from '../types/events'
 import type { GamePhase, Word } from '../types/game'
 import { createPlayerState, INITIAL_HP } from '../types/game'
 import { resolveAttack, type BattleEffect } from '../utils/battle/damage'
 import { acceptTotalDealt, judgeSimultaneousKo } from '../utils/battle/protocol'
-import type { RoomRole } from './useBattleRoom'
-import type { TypingWordResult } from './useTypingEngine'
+import type { RoomRole } from '../composables/useBattleRoom'
+import type { TypingWordResult } from '../composables/useTypingEngine'
+import { useWordsStore } from './words'
 
 export type BattleOutcome = 'win' | 'loss' | 'draw'
 export interface BattleResult {
@@ -14,12 +16,11 @@ export interface BattleResult {
   reason: 'hp_zero' | 'forfeit'
 }
 
-export interface GameMachineOptions {
+export interface BattleInitOptions {
   role: RoomRole
   userId: string
+  /** イベント送信(useBattleRoomのsend)。部屋入室時にinitで注入する */
   send: (event: GameEvent) => void
-  /** ホストが試合開始時に出題プールを取る(シャッフル済みを想定) */
-  getWordPool: () => Word[]
 }
 
 const COUNTDOWN_MS = 3500
@@ -32,11 +33,14 @@ const FORFEIT_GRACE_SEC = 10
  * 対戦の状態遷移と勝敗判定の唯一の窓口。
  * - 自分のHPは自分が権威: 受信attack/state_syncの累積totalDealtから my.hp を再計算
  * - 相手のHP表示は相手のstate_syncが正、自attack時は楽観減算のみ
+ * 部屋の入室時に init()、退室時に reset() を呼ぶこと(ストアは画面をまたいで生存するため)。
  */
-export function useGameMachine(options: GameMachineOptions) {
+export const useBattleStore = defineStore('battle', () => {
+  const wordsStore = useWordsStore()
+
   const phase = ref<GamePhase>('lobby')
   const matchUid = ref<string | null>(null)
-  const words = ref<Word[]>([])
+  const matchWords = ref<Word[]>([])
   const startAt = ref(0)
   const my = reactive(createPlayerState())
   const opp = reactive(createPlayerState())
@@ -53,6 +57,10 @@ export function useGameMachine(options: GameMachineOptions) {
   /** UI演出用: 被弾 */
   const hitFx = ref<{ damage: number; key: number } | null>(null)
 
+  // 非リアクティブな内部状態
+  let role: RoomRole = 'host'
+  let userId = ''
+  let sender: (event: GameEvent) => void = () => {}
   let seq = 0
   let oppTotal = 0 // 受け入れ済みの相手の累積与ダメージ
   let myDeathTs: number | null = null
@@ -64,13 +72,13 @@ export function useGameMachine(options: GameMachineOptions) {
   let graceTimer: ReturnType<typeof setInterval> | null = null
 
   const currentWord = computed<Word | null>(() =>
-    phase.value === 'playing' && words.value.length > 0
-      ? words.value[my.wordIndex % words.value.length]!
+    phase.value === 'playing' && matchWords.value.length > 0
+      ? matchWords.value[my.wordIndex % matchWords.value.length]!
       : null,
   )
 
   function base() {
-    return { v: PROTOCOL_VERSION, from: options.userId }
+    return { v: PROTOCOL_VERSION, from: userId }
   }
 
   function clearTimers() {
@@ -100,32 +108,50 @@ export function useGameMachine(options: GameMachineOptions) {
     hitFx.value = null
   }
 
+  /** 部屋入室時に呼ぶ(送信関数と自分の情報を注入し、全状態を初期化) */
+  function init(options: BattleInitOptions) {
+    role = options.role
+    userId = options.userId
+    sender = options.send
+    reset()
+  }
+
+  /** 退室時に呼ぶ(ストアはページをまたいで生存するため明示リセットが必要) */
+  function reset() {
+    clearTimers()
+    resetMatchState()
+    phase.value = 'lobby'
+    matchUid.value = null
+    matchWords.value = []
+    startAt.value = 0
+  }
+
   // ---------- ローカル入力 ----------
 
   function setReady() {
     if (phase.value !== 'lobby' || myReady.value) return
     myReady.value = true
-    options.send({ ...base(), type: 'ready' })
+    sender({ ...base(), type: 'ready' })
     tryStart()
   }
 
   function tryStart() {
-    if (options.role !== 'host') return
+    if (role !== 'host') return
     if (phase.value !== 'lobby' || !myReady.value || !oppReady.value) return
-    const pool = options.getWordPool()
+    const pool = wordsStore.shuffled()
     if (pool.length === 0) return
-    const matchWords = pool.slice(0, MATCH_WORD_COUNT)
+    const words = pool.slice(0, MATCH_WORD_COUNT)
     const uid = crypto.randomUUID()
     const at = Date.now() + COUNTDOWN_MS
-    options.send({ ...base(), type: 'game_start', matchUid: uid, words: matchWords, startAt: at })
-    beginCountdown(uid, matchWords, at)
+    sender({ ...base(), type: 'game_start', matchUid: uid, words, startAt: at })
+    beginCountdown(uid, words, at)
   }
 
-  function beginCountdown(uid: string, matchWords: Word[], at: number) {
+  function beginCountdown(uid: string, words: Word[], at: number) {
     clearTimers()
     resetMatchState()
     matchUid.value = uid
-    words.value = matchWords
+    matchWords.value = words
     startAt.value = at
     phase.value = 'countdown'
     countdownTimer = setTimeout(() => {
@@ -149,7 +175,7 @@ export function useGameMachine(options: GameMachineOptions) {
     // 楽観減算は送信より前に行う(送信直後に返ってくるstate_syncを上書きして二重減算しないため)
     opp.hp = Math.max(0, opp.hp - outcome.damage)
     attackFx.value = { damage: outcome.damage, effects: outcome.effects, key: Date.now() }
-    options.send({
+    sender({
       ...base(),
       type: 'attack',
       seq: ++seq,
@@ -171,13 +197,13 @@ export function useGameMachine(options: GameMachineOptions) {
   function requestRematch() {
     if (phase.value !== 'finished' || myRematch.value) return
     myRematch.value = true
-    options.send({ ...base(), type: 'rematch' })
+    sender({ ...base(), type: 'rematch' })
     tryRematch()
   }
 
   function tryRematch() {
     if (!myRematch.value || !oppRematch.value) return
-    if (options.role === 'host') {
+    if (role === 'host') {
       phase.value = 'lobby'
       myReady.value = true
       oppReady.value = true
@@ -195,7 +221,7 @@ export function useGameMachine(options: GameMachineOptions) {
         tryStart()
         break
       case 'game_start':
-        if (options.role === 'guest') {
+        if (role === 'guest') {
           const e = event as GameStartEvent
           beginCountdown(e.matchUid, e.words, e.startAt)
         }
@@ -251,7 +277,7 @@ export function useGameMachine(options: GameMachineOptions) {
     if (myDeathTs !== null || result.value) return
     myDeathTs = Date.now()
     my.hp = 0
-    options.send({ ...base(), type: 'game_over', reason: 'hp_zero', ts: myDeathTs })
+    sender({ ...base(), type: 'game_over', reason: 'hp_zero', ts: myDeathTs })
     // 相手もほぼ同時に死んでいる可能性があるため、少し待ってから確定(同時KO裁定)
     deathTimer = setTimeout(() => {
       if (result.value) return
@@ -268,7 +294,7 @@ export function useGameMachine(options: GameMachineOptions) {
     const now = Date.now()
     if (!force && now - lastSyncAt < SYNC_THROTTLE_MS) return
     lastSyncAt = now
-    options.send({
+    sender({
       ...base(),
       type: 'state_sync',
       hp: my.hp,
@@ -308,19 +334,10 @@ export function useGameMachine(options: GameMachineOptions) {
     }, 1000)
   }
 
-  /** 相手が猶予中に戻ってきた場合(v1では同一試合の再開はせずロビーに戻す) */
-  function cancelGrace() {
-    if (graceTimer) clearInterval(graceTimer)
-    graceTimer = null
-    graceRemaining.value = null
-  }
-
-  onBeforeUnmount(clearTimers)
-
   return {
     phase,
     matchUid,
-    words,
+    matchWords,
     startAt,
     my,
     opp,
@@ -333,12 +350,13 @@ export function useGameMachine(options: GameMachineOptions) {
     currentWord,
     attackFx,
     hitFx,
+    init,
+    reset,
     setReady,
     onWordTyped,
     onMiss,
     onRemoteEvent,
     onOpponentLeft,
-    cancelGrace,
     requestRematch,
   }
-}
+})

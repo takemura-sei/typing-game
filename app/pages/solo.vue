@@ -3,7 +3,7 @@ import type { Word } from '~/types/game'
 import { INITIAL_HP } from '~/types/game'
 import { resolveAttack } from '~/utils/battle/damage'
 
-const { source, loadWords, shuffled } = useWords()
+const wordsStore = useWordsStore()
 
 // 出題
 const queue = ref<Word[]>([])
@@ -77,8 +77,8 @@ function nextWord() {
 }
 
 onMounted(async () => {
-  await loadWords()
-  queue.value = shuffled()
+  await wordsStore.loadWords()
+  queue.value = wordsStore.shuffled()
   sessionStartedAt.value = performance.now()
   now.value = sessionStartedAt.value
   clockTimer = setInterval(() => (now.value = performance.now()), 1000)
@@ -134,7 +134,7 @@ onBeforeUnmount(() => {
       </div>
       <p class="text-center text-xs text-slate-600 mt-3">
         IMEはOFF(半角英数)にしてください
-        <span v-if="source === 'fallback'" class="ml-2 text-amber-600">※お題: ローカル(DB未接続)</span>
+        <span v-if="wordsStore.source === 'fallback'" class="ml-2 text-amber-600">※お題: ローカル(DB未接続)</span>
       </p>
     </footer>
   </main>

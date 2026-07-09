@@ -7,49 +7,50 @@ const router = useRouter()
 const code = String(route.params.code ?? '')
 const role = route.query.host === '1' ? ('host' as const) : ('guest' as const)
 
-const { auth, ensureSignedIn } = useAuth()
-const { loadWords, shuffled } = useWords()
+const authStore = useAuthStore()
+const wordsStore = useWordsStore()
+const battle = useBattleStore()
 
 // お題と認証をsetupで確定させる(script setupのtop-level awaitはSuspenseで処理される)
-await loadWords()
-await ensureSignedIn()
+await wordsStore.loadWords()
+await authStore.ensureSignedIn()
 
 const setupError = computed(() => {
   if (!isValidRoomCode(code)) return 'ルームコードが不正です(6桁の数字)'
-  if (auth.value.status === 'unconfigured')
+  if (authStore.status === 'unconfigured')
     return 'オンライン対戦にはSupabaseの設定(.env)が必要です'
-  if (auth.value.status === 'error') return 'サインインに失敗しました。再読み込みしてください'
+  if (authStore.status === 'error') return 'サインインに失敗しました。再読み込みしてください'
   return null
 })
 
-const userId = auth.value.userId ?? 'unknown'
-const myName = auth.value.displayName || 'ゲスト'
-
-const machine = useGameMachine({
-  role,
-  userId,
-  send: (event) => room.send(event),
-  getWordPool: () => shuffled(),
-})
+const userId = authStore.userId ?? 'unknown'
+const myName = authStore.displayName || 'ゲスト'
 
 const room = useBattleRoom({
   code,
   role,
   userId,
   name: myName,
-  onEvent: machine.onRemoteEvent,
-  onPeerLeave: machine.onOpponentLeft,
-  canAcceptGuest: () => machine.phase.value === 'lobby',
+  onEvent: battle.onRemoteEvent,
+  onPeerLeave: battle.onOpponentLeft,
+  canAcceptGuest: () => battle.phase === 'lobby',
 })
+
+// ストアはページをまたいで生存するため、入室ごとに初期化し退室で確実にリセットする
+battle.init({ role, userId, send: room.send })
+onBeforeUnmount(() => battle.reset())
 
 const engine = useTypingEngine({
-  onMiss: machine.onMiss,
-  onWordComplete: (result) => machine.onWordTyped(result),
+  onMiss: battle.onMiss,
+  onWordComplete: (result) => battle.onWordTyped(result),
 })
 
-watch(machine.currentWord, (word) => {
-  if (word) engine.loadWord(word)
-})
+watch(
+  () => battle.currentWord,
+  (word) => {
+    if (word) engine.loadWord(word)
+  },
+)
 
 onMounted(() => {
   if (!setupError.value) room.connect()
@@ -96,15 +97,15 @@ function leaveRoom() {
     </div>
 
     <!-- ロビー -->
-    <div v-else-if="machine.phase.value === 'lobby'" class="my-auto">
+    <div v-else-if="battle.phase === 'lobby'" class="my-auto">
       <RoomLobby
         :code="code"
         :role="role"
         :status="room.status.value"
         :opponent-name="room.opponent.value?.name ?? null"
-        :my-ready="machine.myReady.value"
-        :opp-ready="machine.oppReady.value"
-        @ready="machine.setReady"
+        :my-ready="battle.myReady"
+        :opp-ready="battle.oppReady"
+        @ready="battle.setReady"
       />
     </div>
 
@@ -113,29 +114,26 @@ function leaveRoom() {
       <BattleField
         :my-name="`${myName}(あなた)`"
         :opp-name="opponentName"
-        :my="machine.my"
-        :opp="machine.opp"
-        :current-word="machine.currentWord.value"
+        :my="battle.my"
+        :opp="battle.opp"
+        :current-word="battle.currentWord"
         :kana="engine.kana.value"
         :romaji="engine.romaji.value"
-        :attack-fx="machine.attackFx.value"
-        :hit-fx="machine.hitFx.value"
-        :grace-remaining="machine.graceRemaining.value"
+        :attack-fx="battle.attackFx"
+        :hit-fx="battle.hitFx"
+        :grace-remaining="battle.graceRemaining"
       />
       <p class="text-xs text-slate-600">IMEはOFF(半角英数)にしてください</p>
 
-      <BattleCountdownOverlay
-        v-if="machine.phase.value === 'countdown'"
-        :start-at="machine.startAt.value"
-      />
+      <BattleCountdownOverlay v-if="battle.phase === 'countdown'" :start-at="battle.startAt" />
       <BattleResultModal
-        v-if="machine.phase.value === 'finished' && machine.result.value"
-        :result="machine.result.value"
+        v-if="battle.phase === 'finished' && battle.result"
+        :result="battle.result"
         :opponent-name="opponentName"
-        :my-rematch="machine.myRematch.value"
-        :opp-rematch="machine.oppRematch.value"
+        :my-rematch="battle.myRematch"
+        :opp-rematch="battle.oppRematch"
         :opponent-gone="opponentGone"
-        @rematch="machine.requestRematch"
+        @rematch="battle.requestRematch"
         @leave="leaveRoom"
       />
     </template>

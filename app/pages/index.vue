@@ -2,17 +2,17 @@
 import { generateRoomCode, isValidRoomCode } from '~/utils/roomCode'
 
 const router = useRouter()
-const { auth } = useAuth()
+const authStore = useAuthStore()
 
 const joinCode = ref('')
 const joinError = ref('')
 
-const onlineAvailable = computed(() => auth.value.status === 'signed_in')
+const onlineAvailable = computed(() => authStore.status === 'signed_in')
 
 const authLabel = computed(() => {
-  switch (auth.value.status) {
+  switch (authStore.status) {
     case 'signed_in':
-      return `匿名ログイン中 (${auth.value.userId?.slice(0, 8)}…)`
+      return `匿名ログイン中 (${authStore.userId?.slice(0, 8)}…)`
     case 'unconfigured':
       return 'Supabase未設定(オフラインモード: ソロ練習のみ)'
     case 'signing_in':
