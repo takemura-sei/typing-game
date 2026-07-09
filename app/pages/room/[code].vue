@@ -10,6 +10,7 @@ const role = route.query.host === '1' ? ('host' as const) : ('guest' as const)
 const authStore = useAuthStore()
 const wordsStore = useWordsStore()
 const battle = useBattleStore()
+const resultsStore = useResultsStore()
 
 // お題と認証をsetupで確定させる(script setupのtop-level awaitはSuspenseで処理される)
 await wordsStore.loadWords()
@@ -58,6 +59,36 @@ onMounted(() => {
 
 const opponentName = computed(() => room.opponent.value?.name ?? '相手')
 const opponentGone = computed(() => room.opponent.value === null)
+
+// 相手が切断してもopponent_idを保存できるよう最後の相手を覚えておく
+const lastOpponentId = ref<string | null>(null)
+watch(
+  () => room.opponent.value,
+  (opponent) => {
+    if (opponent) lastOpponentId.value = opponent.userId
+  },
+)
+
+// 試合が確定したら自分視点の戦績を保存(match_uidでdedupeされるためリマッチごとに1行)
+watch(
+  () => battle.phase,
+  (phase) => {
+    if (phase !== 'finished' || !battle.result || !battle.matchUid || !authStore.userId) return
+    resultsStore.saveResult({
+      matchUid: battle.matchUid,
+      playerId: authStore.userId,
+      opponentId: lastOpponentId.value,
+      roomCode: code,
+      result: battle.result,
+      hpLeft: battle.my.hp,
+      damageDealt: battle.my.totalDealt,
+      maxCombo: battle.my.maxCombo,
+      wordsTyped: battle.my.wordsTyped,
+      missCount: battle.my.missCount,
+      durationMs: battle.durationMs,
+    })
+  },
+)
 
 const fatalStatus = computed(() => {
   switch (room.status.value) {

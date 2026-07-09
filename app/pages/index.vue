@@ -97,6 +97,13 @@ function joinRoom() {
         </div>
         <p v-if="joinError" class="text-xs text-red-400 mt-2">{{ joinError }}</p>
       </div>
+
+      <NuxtLink
+        to="/stats"
+        class="rounded-xl bg-slate-800 hover:bg-slate-700 transition-colors px-6 py-3 text-center font-bold text-slate-300"
+      >
+        戦績
+      </NuxtLink>
     </nav>
 
     <p class="text-xs text-slate-500">{{ authLabel }}</p>

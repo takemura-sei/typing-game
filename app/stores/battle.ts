@@ -49,6 +49,8 @@ export const useBattleStore = defineStore('battle', () => {
   const myRematch = ref(false)
   const oppRematch = ref(false)
   const result = ref<BattleResult | null>(null)
+  /** 試合終了時刻(epoch ms)。戦績のduration計算用 */
+  const finishedAt = ref(0)
   /** 切断猶予の残り秒(表示用)。null=猶予中でない */
   const graceRemaining = ref<number | null>(null)
 
@@ -106,6 +108,7 @@ export const useBattleStore = defineStore('battle', () => {
     oppRematch.value = false
     attackFx.value = null
     hitFx.value = null
+    finishedAt.value = 0
   }
 
   /** 部屋入室時に呼ぶ(送信関数と自分の情報を注入し、全状態を初期化) */
@@ -309,8 +312,14 @@ export const useBattleStore = defineStore('battle', () => {
     if (result.value) return
     clearTimers()
     result.value = { outcome, reason }
+    finishedAt.value = Date.now()
     phase.value = 'finished'
   }
+
+  /** 試合時間(ms)。開始前に終了(カウントダウン中の不戦勝等)は0 */
+  const durationMs = computed(() =>
+    finishedAt.value > 0 ? Math.max(0, finishedAt.value - startAt.value) : 0,
+  )
 
   // ---------- 切断処理 ----------
 
@@ -346,6 +355,8 @@ export const useBattleStore = defineStore('battle', () => {
     myRematch,
     oppRematch,
     result,
+    finishedAt,
+    durationMs,
     graceRemaining,
     currentWord,
     attackFx,
