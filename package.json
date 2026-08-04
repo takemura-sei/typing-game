@@ -8,6 +8,9 @@
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "test": "vitest run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "nuxi typecheck",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
@@ -21,6 +24,10 @@
     "vue-router": "^5.1.0"
   },
   "devDependencies": {
-    "vitest": "^4.1.10"
+    "@nuxt/eslint": "^1.16.0",
+    "eslint": "^10.7.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^3.3.8"
   }
 }
