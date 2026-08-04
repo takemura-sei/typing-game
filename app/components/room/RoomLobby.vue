@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { RoomStatus } from '~/composables/useBattleRoom'
+import type { RoomStatus } from '~/composables/use-battle-room'
 
 const props = defineProps<{
   code: string

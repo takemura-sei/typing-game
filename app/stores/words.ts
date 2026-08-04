@@ -1,8 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useSupabase } from '../composables/useSupabase'
+import { loadWords as loadWordsService } from '../services/words'
 import type { Word } from '../types/game'
-import { FALLBACK_WORDS } from '../utils/fallbackWords'
 
 export type WordsSource = 'db' | 'fallback' | 'loading'
 
@@ -13,23 +12,9 @@ export const useWordsStore = defineStore('words', () => {
 
   async function loadWords() {
     if (words.value.length > 0) return
-    const supabase = useSupabase()
-    if (supabase) {
-      const { data, error } = await supabase
-        .from('words')
-        .select('id, display, reading, difficulty')
-        .eq('is_active', true)
-      if (!error && data && data.length > 0) {
-        words.value = data
-        source.value = 'db'
-        return
-      }
-      if (error) {
-        console.warn('[words] DB取得失敗、フォールバックを使用:', error.message)
-      }
-    }
-    words.value = FALLBACK_WORDS
-    source.value = 'fallback'
+    const result = await loadWordsService()
+    words.value = result.words
+    source.value = result.source
   }
 
   /** シャッフルした出題列を返す */

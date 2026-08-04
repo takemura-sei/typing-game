@@ -4,7 +4,7 @@ import type { GameEvent } from '../app/types/events'
 import type { Word } from '../app/types/game'
 import { useBattleStore } from '../app/stores/battle'
 import { useWordsStore } from '../app/stores/words'
-import type { TypingWordResult } from '../app/composables/useTypingEngine'
+import type { TypingWordResult } from '../app/composables/use-typing-engine'
 
 /**
  * 2つのbattleストア(Piniaインスタンス2つ=2プレイヤー)をループバック直結して

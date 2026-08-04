@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { isValidRoomCode } from '~/utils/roomCode'
+import { isValidRoomCode } from '~/utils/room-code'
+import { useAuth } from '~/composables/use-auth'
+import { useWords } from '~/composables/use-words'
+import { useBattle } from '~/composables/use-battle'
 
 const route = useRoute()
 const router = useRouter()
@@ -7,51 +10,71 @@ const router = useRouter()
 const code = String(route.params.code ?? '')
 const role = route.query.host === '1' ? ('host' as const) : ('guest' as const)
 
-const authStore = useAuthStore()
-const wordsStore = useWordsStore()
-const battle = useBattleStore()
-const resultsStore = useResultsStore()
+const { userId: authUserId, displayName, status: authStatus, ensureSignedIn } = useAuth()
+const { loadWords } = useWords()
+const {
+  phase,
+  startAt,
+  my,
+  opp,
+  myReady,
+  oppReady,
+  myRematch,
+  oppRematch,
+  result,
+  graceRemaining,
+  currentWord,
+  attackFx,
+  hitFx,
+  init,
+  reset,
+  setReady,
+  onWordTyped,
+  onMiss,
+  onRemoteEvent,
+  onOpponentLeft,
+  requestRematch,
+  trackOpponent,
+  autoSaveResult,
+} = useBattle()
 
 // お題と認証をsetupで確定させる(script setupのtop-level awaitはSuspenseで処理される)
-await wordsStore.loadWords()
-await authStore.ensureSignedIn()
+await loadWords()
+await ensureSignedIn()
 
 const setupError = computed(() => {
   if (!isValidRoomCode(code)) return 'ルームコードが不正です(6桁の数字)'
-  if (authStore.status === 'unconfigured')
+  if (authStatus.value === 'unconfigured')
     return 'オンライン対戦にはSupabaseの設定(.env)が必要です'
-  if (authStore.status === 'error') return 'サインインに失敗しました。再読み込みしてください'
+  if (authStatus.value === 'error') return 'サインインに失敗しました。再読み込みしてください'
   return null
 })
 
-const userId = authStore.userId ?? 'unknown'
-const myName = authStore.displayName || 'ゲスト'
+const userId = authUserId.value ?? 'unknown'
+const myName = displayName.value || 'ゲスト'
 
 const room = useBattleRoom({
   code,
   role,
   userId,
   name: myName,
-  onEvent: battle.onRemoteEvent,
-  onPeerLeave: battle.onOpponentLeft,
-  canAcceptGuest: () => battle.phase === 'lobby',
+  onEvent: onRemoteEvent,
+  onPeerLeave: onOpponentLeft,
+  canAcceptGuest: () => phase.value === 'lobby',
 })
 
 // ストアはページをまたいで生存するため、入室ごとに初期化し退室で確実にリセットする
-battle.init({ role, userId, send: room.send })
-onBeforeUnmount(() => battle.reset())
+init({ role, userId, send: room.send })
+onBeforeUnmount(() => reset())
 
 const engine = useTypingEngine({
-  onMiss: battle.onMiss,
-  onWordComplete: (result) => battle.onWordTyped(result),
+  onMiss,
+  onWordComplete: (wordResult) => onWordTyped(wordResult),
 })
 
-watch(
-  () => battle.currentWord,
-  (word) => {
-    if (word) engine.loadWord(word)
-  },
-)
+watch(currentWord, (word) => {
+  if (word) engine.loadWord(word)
+})
 
 onMounted(() => {
   if (!setupError.value) room.connect()
@@ -60,35 +83,15 @@ onMounted(() => {
 const opponentName = computed(() => room.opponent.value?.name ?? '相手')
 const opponentGone = computed(() => room.opponent.value === null)
 
-// 相手が切断してもopponent_idを保存できるよう最後の相手を覚えておく
-const lastOpponentId = ref<string | null>(null)
 watch(
   () => room.opponent.value,
-  (opponent) => {
-    if (opponent) lastOpponentId.value = opponent.userId
-  },
+  (opponent) => trackOpponent(opponent?.userId ?? null),
 )
 
 // 試合が確定したら自分視点の戦績を保存(match_uidでdedupeされるためリマッチごとに1行)
-watch(
-  () => battle.phase,
-  (phase) => {
-    if (phase !== 'finished' || !battle.result || !battle.matchUid || !authStore.userId) return
-    resultsStore.saveResult({
-      matchUid: battle.matchUid,
-      playerId: authStore.userId,
-      opponentId: lastOpponentId.value,
-      roomCode: code,
-      result: battle.result,
-      hpLeft: battle.my.hp,
-      damageDealt: battle.my.totalDealt,
-      maxCombo: battle.my.maxCombo,
-      wordsTyped: battle.my.wordsTyped,
-      missCount: battle.my.missCount,
-      durationMs: battle.durationMs,
-    })
-  },
-)
+if (authUserId.value) {
+  autoSaveResult(authUserId.value, code)
+}
 
 const fatalStatus = computed(() => {
   switch (room.status.value) {
@@ -128,15 +131,15 @@ function leaveRoom() {
     </div>
 
     <!-- ロビー -->
-    <div v-else-if="battle.phase === 'lobby'" class="my-auto">
+    <div v-else-if="phase === 'lobby'" class="my-auto">
       <RoomLobby
         :code="code"
         :role="role"
         :status="room.status.value"
         :opponent-name="room.opponent.value?.name ?? null"
-        :my-ready="battle.myReady"
-        :opp-ready="battle.oppReady"
-        @ready="battle.setReady"
+        :my-ready="myReady"
+        :opp-ready="oppReady"
+        @ready="setReady"
       />
     </div>
 
@@ -145,26 +148,26 @@ function leaveRoom() {
       <BattleField
         :my-name="`${myName}(あなた)`"
         :opp-name="opponentName"
-        :my="battle.my"
-        :opp="battle.opp"
-        :current-word="battle.currentWord"
+        :my="my"
+        :opp="opp"
+        :current-word="currentWord"
         :kana="engine.kana.value"
         :romaji="engine.romaji.value"
-        :attack-fx="battle.attackFx"
-        :hit-fx="battle.hitFx"
-        :grace-remaining="battle.graceRemaining"
+        :attack-fx="attackFx"
+        :hit-fx="hitFx"
+        :grace-remaining="graceRemaining"
       />
       <p class="text-xs text-slate-600">IMEはOFF(半角英数)にしてください</p>
 
-      <BattleCountdownOverlay v-if="battle.phase === 'countdown'" :start-at="battle.startAt" />
+      <BattleCountdownOverlay v-if="phase === 'countdown'" :start-at="startAt" />
       <BattleResultModal
-        v-if="battle.phase === 'finished' && battle.result"
-        :result="battle.result"
+        v-if="phase === 'finished' && result"
+        :result="result"
         :opponent-name="opponentName"
-        :my-rematch="battle.myRematch"
-        :opp-rematch="battle.oppRematch"
+        :my-rematch="myRematch"
+        :opp-rematch="oppRematch"
         :opponent-gone="opponentGone"
-        @rematch="battle.requestRematch"
+        @rematch="requestRematch"
         @leave="leaveRoom"
       />
     </template>

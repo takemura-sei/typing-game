@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { generateRoomCode, isValidRoomCode } from '~/utils/roomCode'
+import { generateRoomCode, isValidRoomCode } from '~/utils/room-code'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -81,7 +81,7 @@ function joinRoom() {
             class="flex-1 min-w-0 rounded-lg bg-slate-800 border border-slate-600 px-3 py-2 font-mono text-lg tracking-widest text-center focus:outline-none focus:border-amber-400"
             :disabled="!onlineAvailable"
             @keydown.enter="joinRoom"
-          />
+          >
           <button
             class="rounded-lg px-4 py-2 font-bold transition-colors"
             :class="

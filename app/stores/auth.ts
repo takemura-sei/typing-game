@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useSupabase } from '../composables/useSupabase'
+import { signInAnonymously } from '../services/auth'
+import { useSupabase } from '../composables/use-supabase'
 
 export type AuthStatus = 'idle' | 'signing_in' | 'signed_in' | 'unconfigured' | 'error'
 
@@ -14,40 +15,16 @@ export const useAuthStore = defineStore('auth', () => {
   const status = ref<AuthStatus>('idle')
 
   async function ensureSignedIn() {
-    const supabase = useSupabase()
-    if (!supabase) {
+    if (!useSupabase()) {
       status.value = 'unconfigured'
       return
     }
     if (status.value === 'signed_in' || status.value === 'signing_in') return
 
     status.value = 'signing_in'
-    try {
-      // 既存セッションがあれば再利用(匿名ユーザーの継続性)
-      const { data: sessionData } = await supabase.auth.getSession()
-      let id = sessionData.session?.user.id ?? null
-
-      if (!id) {
-        const { data, error } = await supabase.auth.signInAnonymously()
-        if (error) throw error
-        id = data.user?.id ?? null
-      }
-      if (!id) throw new Error('no user id after sign-in')
-
-      userId.value = id
-      status.value = 'signed_in'
-
-      // profiles行を確保(テーブル未作成でも致命傷にしない)
-      const { error: upsertError } = await supabase
-        .from('profiles')
-        .upsert({ id }, { onConflict: 'id', ignoreDuplicates: true })
-      if (upsertError) {
-        console.warn('[auth] profiles upsert failed:', upsertError.message)
-      }
-    } catch (e) {
-      console.error('[auth] anonymous sign-in failed:', e)
-      status.value = 'error'
-    }
+    const result = await signInAnonymously()
+    userId.value = result.userId
+    status.value = result.status
   }
 
   return { userId, displayName, status, ensureSignedIn }

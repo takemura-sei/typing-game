@@ -1,29 +1,15 @@
 <script setup lang="ts">
-import type { ResultCode } from '~/stores/results'
+import { useAuth } from '~/composables/use-auth'
+import { useResults } from '~/composables/use-results'
+import { formatDate, formatDuration } from '~/utils/format'
+import { RESULT_LABEL } from '~/utils/result-label'
 
-const authStore = useAuthStore()
-const resultsStore = useResultsStore()
+const { userId, status, ensureSignedIn } = useAuth()
+const { history, loading, loadError, summary, loadHistory } = useResults()
 
-await authStore.ensureSignedIn()
-if (authStore.userId) {
-  await resultsStore.loadHistory(authStore.userId)
-}
-
-const RESULT_LABEL: Record<ResultCode, { text: string; class: string }> = {
-  win: { text: '勝利', class: 'text-amber-300' },
-  forfeit_win: { text: '不戦勝', class: 'text-amber-300' },
-  loss: { text: '敗北', class: 'text-slate-400' },
-  forfeit_loss: { text: '不戦敗', class: 'text-slate-400' },
-  draw: { text: '引分', class: 'text-sky-300' },
-}
-
-function formatDate(iso: string): string {
-  const d = new Date(iso)
-  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-
-function formatDuration(ms: number): string {
-  return `${Math.round(ms / 1000)}秒`
+await ensureSignedIn()
+if (userId.value) {
+  await loadHistory(userId.value)
 }
 </script>
 
@@ -34,38 +20,38 @@ function formatDuration(ms: number): string {
       <h1 class="text-xl font-bold">戦績</h1>
     </header>
 
-    <p v-if="authStore.status !== 'signed_in'" class="my-auto text-slate-400">
+    <p v-if="status !== 'signed_in'" class="my-auto text-slate-400">
       オンライン対戦の戦績はSupabase設定後に記録されます
     </p>
-    <p v-else-if="resultsStore.loadError" class="my-auto text-red-400">
-      {{ resultsStore.loadError }}
+    <p v-else-if="loadError" class="my-auto text-red-400">
+      {{ loadError }}
     </p>
-    <p v-else-if="resultsStore.loading" class="my-auto text-slate-400 animate-pulse">読み込み中…</p>
+    <p v-else-if="loading" class="my-auto text-slate-400 animate-pulse">読み込み中…</p>
 
     <template v-else>
       <!-- サマリー -->
       <section class="w-full max-w-2xl grid grid-cols-4 gap-3 text-center">
         <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <p class="text-3xl font-black text-amber-300">{{ resultsStore.summary.wins }}</p>
+          <p class="text-3xl font-black text-amber-300">{{ summary.wins }}</p>
           <p class="text-xs text-slate-400 mt-1">勝利</p>
         </div>
         <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <p class="text-3xl font-black text-slate-300">{{ resultsStore.summary.losses }}</p>
+          <p class="text-3xl font-black text-slate-300">{{ summary.losses }}</p>
           <p class="text-xs text-slate-400 mt-1">敗北</p>
         </div>
         <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <p class="text-3xl font-black">{{ resultsStore.summary.winRate }}<span class="text-lg">%</span></p>
+          <p class="text-3xl font-black">{{ summary.winRate }}<span class="text-lg">%</span></p>
           <p class="text-xs text-slate-400 mt-1">勝率</p>
         </div>
         <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <p class="text-3xl font-black text-emerald-400">{{ resultsStore.summary.bestCombo }}</p>
+          <p class="text-3xl font-black text-emerald-400">{{ summary.bestCombo }}</p>
           <p class="text-xs text-slate-400 mt-1">最大コンボ</p>
         </div>
       </section>
 
       <!-- 履歴 -->
       <section class="w-full max-w-2xl">
-        <p v-if="resultsStore.history.length === 0" class="text-center text-slate-500 py-10">
+        <p v-if="history.length === 0" class="text-center text-slate-500 py-10">
           まだ対戦記録がありません。部屋を作って対戦してみましょう!
         </p>
         <div v-else class="overflow-x-auto rounded-xl border border-slate-800">
@@ -83,7 +69,7 @@ function formatDuration(ms: number): string {
             </thead>
             <tbody>
               <tr
-                v-for="record in resultsStore.history"
+                v-for="record in history"
                 :key="record.id"
                 class="border-t border-slate-800 tabular-nums"
               >
