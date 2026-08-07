@@ -1,8 +1,7 @@
 import { defineStore } from 'pinia'
-import { computed, reactive, ref } from 'vue'
 import type { AttackEvent, GameEvent, GameStartEvent, StateSyncEvent } from '../types/events'
 import { PROTOCOL_VERSION } from '../types/events'
-import type { GamePhase, Word } from '../types/game'
+import type { GamePhase, PlayerState, Word } from '../types/game'
 import { createPlayerState, INITIAL_HP } from '../types/game'
 import { resolveAttack, type BattleEffect } from '../utils/battle/damage'
 import { acceptTotalDealt, judgeSimultaneousKo } from '../utils/battle/protocol'
@@ -29,345 +28,354 @@ const SYNC_THROTTLE_MS = 200
 const SIMUL_KO_WAIT_MS = 500
 const FORFEIT_GRACE_SEC = 10
 
+interface BattleState {
+  phase: GamePhase
+  matchUid: string | null
+  matchWords: Word[]
+  startAt: number
+  my: PlayerState
+  opp: PlayerState
+  myReady: boolean
+  oppReady: boolean
+  myRematch: boolean
+  oppRematch: boolean
+  result: BattleResult | null
+  /** 試合終了時刻(epoch ms)。戦績のduration計算用 */
+  finishedAt: number
+  /** 切断猶予の残り秒(表示用)。null=猶予中でない */
+  graceRemaining: number | null
+  /** UI演出用: 自分の攻撃(key更新で発火) */
+  attackFx: { damage: number; effects: BattleEffect[]; key: number } | null
+  /** UI演出用: 被弾 */
+  hitFx: { damage: number; key: number } | null
+
+  // ---- 以下、非reactiveな内部実装状態(公開APIではない) ----
+  role: RoomRole
+  userId: string
+  sender: (event: GameEvent) => void
+  seq: number
+  /** 受け入れ済みの相手の累積与ダメージ */
+  oppTotal: number
+  myDeathTs: number | null
+  oppDeathTs: number | null
+  lastSyncAt: number
+  countdownTimer: ReturnType<typeof setTimeout> | null
+  deathTimer: ReturnType<typeof setTimeout> | null
+  oppWinTimer: ReturnType<typeof setTimeout> | null
+  graceTimer: ReturnType<typeof setInterval> | null
+}
+
 /**
  * 対戦の状態遷移と勝敗判定の唯一の窓口。
  * - 自分のHPは自分が権威: 受信attack/state_syncの累積totalDealtから my.hp を再計算
  * - 相手のHP表示は相手のstate_syncが正、自attack時は楽観減算のみ
  * 部屋の入室時に init()、退室時に reset() を呼ぶこと(ストアは画面をまたいで生存するため)。
  */
-export const useBattleStore = defineStore('battle', () => {
-  const wordsStore = useWordsStore()
+export const useBattleStore = defineStore('battle', {
+  state: (): BattleState => ({
+    phase: 'lobby',
+    matchUid: null,
+    matchWords: [],
+    startAt: 0,
+    my: createPlayerState(),
+    opp: createPlayerState(),
+    myReady: false,
+    oppReady: false,
+    myRematch: false,
+    oppRematch: false,
+    result: null,
+    finishedAt: 0,
+    graceRemaining: null,
+    attackFx: null,
+    hitFx: null,
 
-  const phase = ref<GamePhase>('lobby')
-  const matchUid = ref<string | null>(null)
-  const matchWords = ref<Word[]>([])
-  const startAt = ref(0)
-  const my = reactive(createPlayerState())
-  const opp = reactive(createPlayerState())
-  const myReady = ref(false)
-  const oppReady = ref(false)
-  const myRematch = ref(false)
-  const oppRematch = ref(false)
-  const result = ref<BattleResult | null>(null)
-  /** 試合終了時刻(epoch ms)。戦績のduration計算用 */
-  const finishedAt = ref(0)
-  /** 切断猶予の残り秒(表示用)。null=猶予中でない */
-  const graceRemaining = ref<number | null>(null)
+    role: 'host',
+    userId: '',
+    sender: () => {},
+    seq: 0,
+    oppTotal: 0,
+    myDeathTs: null,
+    oppDeathTs: null,
+    lastSyncAt: 0,
+    countdownTimer: null,
+    deathTimer: null,
+    oppWinTimer: null,
+    graceTimer: null,
+  }),
 
-  /** UI演出用: 自分の攻撃(key更新で発火) */
-  const attackFx = ref<{ damage: number; effects: BattleEffect[]; key: number } | null>(null)
-  /** UI演出用: 被弾 */
-  const hitFx = ref<{ damage: number; key: number } | null>(null)
+  getters: {
+    /** 現在出題中のお題。playing以外はnull */
+    currentWord(state): Word | null {
+      return state.phase === 'playing' && state.matchWords.length > 0
+        ? state.matchWords[state.my.wordIndex % state.matchWords.length]!
+        : null
+    },
 
-  // 非リアクティブな内部状態
-  let role: RoomRole = 'host'
-  let userId = ''
-  let sender: (event: GameEvent) => void = () => {}
-  let seq = 0
-  let oppTotal = 0 // 受け入れ済みの相手の累積与ダメージ
-  let myDeathTs: number | null = null
-  let oppDeathTs: number | null = null
-  let lastSyncAt = 0
-  let countdownTimer: ReturnType<typeof setTimeout> | null = null
-  let deathTimer: ReturnType<typeof setTimeout> | null = null
-  let oppWinTimer: ReturnType<typeof setTimeout> | null = null
-  let graceTimer: ReturnType<typeof setInterval> | null = null
+    /** 試合時間(ms)。開始前に終了(カウントダウン中の不戦勝等)は0 */
+    durationMs(state): number {
+      return state.finishedAt > 0 ? Math.max(0, state.finishedAt - state.startAt) : 0
+    },
+  },
 
-  const currentWord = computed<Word | null>(() =>
-    phase.value === 'playing' && matchWords.value.length > 0
-      ? matchWords.value[my.wordIndex % matchWords.value.length]!
-      : null,
-  )
+  actions: {
+    base() {
+      return { v: PROTOCOL_VERSION, from: this.userId }
+    },
 
-  function base() {
-    return { v: PROTOCOL_VERSION, from: userId }
-  }
+    clearTimers() {
+      if (this.countdownTimer) clearTimeout(this.countdownTimer)
+      if (this.deathTimer) clearTimeout(this.deathTimer)
+      if (this.oppWinTimer) clearTimeout(this.oppWinTimer)
+      if (this.graceTimer) clearInterval(this.graceTimer)
+      this.countdownTimer = this.deathTimer = this.oppWinTimer = null
+      this.graceTimer = null
+      this.graceRemaining = null
+    },
 
-  function clearTimers() {
-    if (countdownTimer) clearTimeout(countdownTimer)
-    if (deathTimer) clearTimeout(deathTimer)
-    if (oppWinTimer) clearTimeout(oppWinTimer)
-    if (graceTimer) clearInterval(graceTimer)
-    countdownTimer = deathTimer = oppWinTimer = null
-    graceTimer = null
-    graceRemaining.value = null
-  }
+    resetMatchState() {
+      this.my = createPlayerState()
+      this.opp = createPlayerState()
+      this.seq = 0
+      this.oppTotal = 0
+      this.myDeathTs = null
+      this.oppDeathTs = null
+      this.lastSyncAt = 0
+      this.result = null
+      this.myReady = false
+      this.oppReady = false
+      this.myRematch = false
+      this.oppRematch = false
+      this.attackFx = null
+      this.hitFx = null
+      this.finishedAt = 0
+    },
 
-  function resetMatchState() {
-    Object.assign(my, createPlayerState())
-    Object.assign(opp, createPlayerState())
-    seq = 0
-    oppTotal = 0
-    myDeathTs = null
-    oppDeathTs = null
-    lastSyncAt = 0
-    result.value = null
-    myReady.value = false
-    oppReady.value = false
-    myRematch.value = false
-    oppRematch.value = false
-    attackFx.value = null
-    hitFx.value = null
-    finishedAt.value = 0
-  }
+    /** 部屋入室時に呼ぶ(送信関数と自分の情報を注入し、全状態を初期化) */
+    init(options: BattleInitOptions) {
+      this.role = options.role
+      this.userId = options.userId
+      this.sender = options.send
+      this.reset()
+    },
 
-  /** 部屋入室時に呼ぶ(送信関数と自分の情報を注入し、全状態を初期化) */
-  function init(options: BattleInitOptions) {
-    role = options.role
-    userId = options.userId
-    sender = options.send
-    reset()
-  }
+    /** 退室時に呼ぶ(ストアはページをまたいで生存するため明示リセットが必要) */
+    reset() {
+      this.clearTimers()
+      this.resetMatchState()
+      this.phase = 'lobby'
+      this.matchUid = null
+      this.matchWords = []
+      this.startAt = 0
+    },
 
-  /** 退室時に呼ぶ(ストアはページをまたいで生存するため明示リセットが必要) */
-  function reset() {
-    clearTimers()
-    resetMatchState()
-    phase.value = 'lobby'
-    matchUid.value = null
-    matchWords.value = []
-    startAt.value = 0
-  }
+    // ---------- ローカル入力 ----------
 
-  // ---------- ローカル入力 ----------
+    setReady() {
+      if (this.phase !== 'lobby' || this.myReady) return
+      this.myReady = true
+      this.sender({ ...this.base(), type: 'ready' })
+      this.tryStart()
+    },
 
-  function setReady() {
-    if (phase.value !== 'lobby' || myReady.value) return
-    myReady.value = true
-    sender({ ...base(), type: 'ready' })
-    tryStart()
-  }
+    tryStart() {
+      if (this.role !== 'host') return
+      if (this.phase !== 'lobby' || !this.myReady || !this.oppReady) return
+      const wordsStore = useWordsStore()
+      const pool = wordsStore.shuffled()
+      if (pool.length === 0) return
+      const words = pool.slice(0, MATCH_WORD_COUNT)
+      const uid = crypto.randomUUID()
+      const at = Date.now() + COUNTDOWN_MS
+      this.sender({ ...this.base(), type: 'game_start', matchUid: uid, words, startAt: at })
+      this.beginCountdown(uid, words, at)
+    },
 
-  function tryStart() {
-    if (role !== 'host') return
-    if (phase.value !== 'lobby' || !myReady.value || !oppReady.value) return
-    const pool = wordsStore.shuffled()
-    if (pool.length === 0) return
-    const words = pool.slice(0, MATCH_WORD_COUNT)
-    const uid = crypto.randomUUID()
-    const at = Date.now() + COUNTDOWN_MS
-    sender({ ...base(), type: 'game_start', matchUid: uid, words, startAt: at })
-    beginCountdown(uid, words, at)
-  }
+    beginCountdown(uid: string, words: Word[], at: number) {
+      this.clearTimers()
+      this.resetMatchState()
+      this.matchUid = uid
+      this.matchWords = words
+      this.startAt = at
+      this.phase = 'countdown'
+      this.countdownTimer = setTimeout(() => {
+        if (this.phase === 'countdown') this.phase = 'playing'
+      }, Math.max(0, at - Date.now()))
+    },
 
-  function beginCountdown(uid: string, words: Word[], at: number) {
-    clearTimers()
-    resetMatchState()
-    matchUid.value = uid
-    matchWords.value = words
-    startAt.value = at
-    phase.value = 'countdown'
-    countdownTimer = setTimeout(() => {
-      if (phase.value === 'countdown') phase.value = 'playing'
-    }, Math.max(0, at - Date.now()))
-  }
+    onWordTyped(typing: TypingWordResult) {
+      if (this.phase !== 'playing' || this.myDeathTs !== null) return
+      this.my.combo++
+      this.my.maxCombo = Math.max(this.my.maxCombo, this.my.combo)
+      this.my.wordsTyped++
+      this.my.wordIndex++
 
-  function onWordTyped(typing: TypingWordResult) {
-    if (phase.value !== 'playing' || myDeathTs !== null) return
-    my.combo++
-    my.maxCombo = Math.max(my.maxCombo, my.combo)
-    my.wordsTyped++
-    my.wordIndex++
+      const outcome = resolveAttack('normal', {
+        word: typing.word,
+        combo: this.my.combo,
+        elapsedMs: typing.elapsedMs,
+      })
+      this.my.totalDealt += outcome.damage
+      // 楽観減算は送信より前に行う(送信直後に返ってくるstate_syncを上書きして二重減算しないため)
+      this.opp.hp = Math.max(0, this.opp.hp - outcome.damage)
+      this.attackFx = { damage: outcome.damage, effects: outcome.effects, key: Date.now() }
+      this.sender({
+        ...this.base(),
+        type: 'attack',
+        seq: ++this.seq,
+        kind: 'normal',
+        damage: outcome.damage,
+        totalDealt: this.my.totalDealt,
+        combo: this.my.combo,
+        ts: Date.now(),
+      })
+      this.sync()
+    },
 
-    const outcome = resolveAttack('normal', {
-      word: typing.word,
-      combo: my.combo,
-      elapsedMs: typing.elapsedMs,
-    })
-    my.totalDealt += outcome.damage
-    // 楽観減算は送信より前に行う(送信直後に返ってくるstate_syncを上書きして二重減算しないため)
-    opp.hp = Math.max(0, opp.hp - outcome.damage)
-    attackFx.value = { damage: outcome.damage, effects: outcome.effects, key: Date.now() }
-    sender({
-      ...base(),
-      type: 'attack',
-      seq: ++seq,
-      kind: 'normal',
-      damage: outcome.damage,
-      totalDealt: my.totalDealt,
-      combo: my.combo,
-      ts: Date.now(),
-    })
-    sync()
-  }
+    onMiss() {
+      if (this.phase !== 'playing') return
+      this.my.combo = 0
+      this.my.missCount++
+    },
 
-  function onMiss() {
-    if (phase.value !== 'playing') return
-    my.combo = 0
-    my.missCount++
-  }
+    requestRematch() {
+      if (this.phase !== 'finished' || this.myRematch) return
+      this.myRematch = true
+      this.sender({ ...this.base(), type: 'rematch' })
+      this.tryRematch()
+    },
 
-  function requestRematch() {
-    if (phase.value !== 'finished' || myRematch.value) return
-    myRematch.value = true
-    sender({ ...base(), type: 'rematch' })
-    tryRematch()
-  }
-
-  function tryRematch() {
-    if (!myRematch.value || !oppRematch.value) return
-    if (role === 'host') {
-      phase.value = 'lobby'
-      myReady.value = true
-      oppReady.value = true
-      tryStart()
-    }
-    // ゲストはホストのgame_startを待つ
-  }
-
-  // ---------- 受信イベント ----------
-
-  function onRemoteEvent(event: GameEvent) {
-    switch (event.type) {
-      case 'ready':
-        oppReady.value = true
-        tryStart()
-        break
-      case 'game_start':
-        if (role === 'guest') {
-          const e = event as GameStartEvent
-          beginCountdown(e.matchUid, e.words, e.startAt)
-        }
-        break
-      case 'attack':
-        applyOpponentDealt((event as AttackEvent).totalDealt, event as AttackEvent)
-        break
-      case 'state_sync': {
-        const e = event as StateSyncEvent
-        opp.hp = Math.max(0, Math.min(INITIAL_HP, e.hp))
-        opp.combo = e.combo
-        opp.wordIndex = e.wordIndex
-        applyOpponentDealt(e.totalDealt, null)
-        break
+    tryRematch() {
+      if (!this.myRematch || !this.oppRematch) return
+      if (this.role === 'host') {
+        this.phase = 'lobby'
+        this.myReady = true
+        this.oppReady = true
+        this.tryStart()
       }
-      case 'game_over':
-        if (event.reason === 'hp_zero') {
-          oppDeathTs = event.ts
-          opp.hp = 0
-          if (myDeathTs !== null) {
-            finish(judgeSimultaneousKo(myDeathTs, oppDeathTs), 'hp_zero')
-          } else {
-            // 即勝利にせず少し待つ: 相手のとどめの攻撃が飛行中で自分も直後に死ぬ(同時KO)可能性がある
-            oppWinTimer = setTimeout(() => {
-              if (!result.value && myDeathTs === null) finish('win', 'hp_zero')
-            }, SIMUL_KO_WAIT_MS)
+      // ゲストはホストのgame_startを待つ
+    },
+
+    // ---------- 受信イベント ----------
+
+    onRemoteEvent(event: GameEvent) {
+      switch (event.type) {
+        case 'ready':
+          this.oppReady = true
+          this.tryStart()
+          break
+        case 'game_start':
+          if (this.role === 'guest') {
+            const e = event as GameStartEvent
+            this.beginCountdown(e.matchUid, e.words, e.startAt)
           }
+          break
+        case 'attack':
+          this.applyOpponentDealt((event as AttackEvent).totalDealt, event as AttackEvent)
+          break
+        case 'state_sync': {
+          const e = event as StateSyncEvent
+          this.opp.hp = Math.max(0, Math.min(INITIAL_HP, e.hp))
+          this.opp.combo = e.combo
+          this.opp.wordIndex = e.wordIndex
+          this.applyOpponentDealt(e.totalDealt, null)
+          break
         }
-        break
-      case 'rematch':
-        oppRematch.value = true
-        tryRematch()
-        break
-      // join系はuseBattleRoomが処理済み。未知typeはparse段階で破棄済み
-    }
-  }
-
-  /** 相手の累積与ダメージを受け入れて自分のHPを再計算(イベント欠落の自己修復点) */
-  function applyOpponentDealt(incomingTotal: number, attack: AttackEvent | null) {
-    if (phase.value !== 'playing' && phase.value !== 'finished') return
-    const prev = oppTotal
-    oppTotal = acceptTotalDealt(oppTotal, incomingTotal)
-    if (oppTotal === prev) return
-
-    my.hp = Math.max(0, INITIAL_HP - oppTotal)
-    hitFx.value = { damage: oppTotal - prev, key: Date.now() }
-    if (attack) opp.combo = attack.combo
-    sync(true)
-    if (my.hp <= 0) die()
-  }
-
-  function die() {
-    if (myDeathTs !== null || result.value) return
-    myDeathTs = Date.now()
-    my.hp = 0
-    sender({ ...base(), type: 'game_over', reason: 'hp_zero', ts: myDeathTs })
-    // 相手もほぼ同時に死んでいる可能性があるため、少し待ってから確定(同時KO裁定)
-    deathTimer = setTimeout(() => {
-      if (result.value) return
-      if (oppDeathTs !== null) {
-        finish(judgeSimultaneousKo(myDeathTs!, oppDeathTs), 'hp_zero')
-      } else {
-        finish('loss', 'hp_zero')
+        case 'game_over':
+          if (event.reason === 'hp_zero') {
+            this.oppDeathTs = event.ts
+            this.opp.hp = 0
+            if (this.myDeathTs !== null) {
+              this.finish(judgeSimultaneousKo(this.myDeathTs, this.oppDeathTs), 'hp_zero')
+            } else {
+              // 即勝利にせず少し待つ: 相手のとどめの攻撃が飛行中で自分も直後に死ぬ(同時KO)可能性がある
+              this.oppWinTimer = setTimeout(() => {
+                if (!this.result && this.myDeathTs === null) this.finish('win', 'hp_zero')
+              }, SIMUL_KO_WAIT_MS)
+            }
+          }
+          break
+        case 'rematch':
+          this.oppRematch = true
+          this.tryRematch()
+          break
+        // join系はuseBattleRoomが処理済み。未知typeはparse段階で破棄済み
       }
-    }, SIMUL_KO_WAIT_MS)
-  }
+    },
 
-  function sync(force = false) {
-    if (phase.value !== 'playing') return
-    const now = Date.now()
-    if (!force && now - lastSyncAt < SYNC_THROTTLE_MS) return
-    lastSyncAt = now
-    sender({
-      ...base(),
-      type: 'state_sync',
-      hp: my.hp,
-      combo: my.combo,
-      wordIndex: my.wordIndex,
-      totalDealt: my.totalDealt,
-      ts: now,
-    })
-  }
+    /** 相手の累積与ダメージを受け入れて自分のHPを再計算(イベント欠落の自己修復点) */
+    applyOpponentDealt(incomingTotal: number, attack: AttackEvent | null) {
+      if (this.phase !== 'playing' && this.phase !== 'finished') return
+      const prev = this.oppTotal
+      this.oppTotal = acceptTotalDealt(this.oppTotal, incomingTotal)
+      if (this.oppTotal === prev) return
 
-  function finish(outcome: BattleOutcome, reason: BattleResult['reason']) {
-    if (result.value) return
-    clearTimers()
-    result.value = { outcome, reason }
-    finishedAt.value = Date.now()
-    phase.value = 'finished'
-  }
+      this.my.hp = Math.max(0, INITIAL_HP - this.oppTotal)
+      this.hitFx = { damage: this.oppTotal - prev, key: Date.now() }
+      if (attack) this.opp.combo = attack.combo
+      this.sync(true)
+      if (this.my.hp <= 0) this.die()
+    },
 
-  /** 試合時間(ms)。開始前に終了(カウントダウン中の不戦勝等)は0 */
-  const durationMs = computed(() =>
-    finishedAt.value > 0 ? Math.max(0, finishedAt.value - startAt.value) : 0,
-  )
+    die() {
+      if (this.myDeathTs !== null || this.result) return
+      this.myDeathTs = Date.now()
+      this.my.hp = 0
+      this.sender({ ...this.base(), type: 'game_over', reason: 'hp_zero', ts: this.myDeathTs })
+      // 相手もほぼ同時に死んでいる可能性があるため、少し待ってから確定(同時KO裁定)
+      this.deathTimer = setTimeout(() => {
+        if (this.result) return
+        if (this.oppDeathTs !== null) {
+          this.finish(judgeSimultaneousKo(this.myDeathTs!, this.oppDeathTs), 'hp_zero')
+        } else {
+          this.finish('loss', 'hp_zero')
+        }
+      }, SIMUL_KO_WAIT_MS)
+    },
 
-  // ---------- 切断処理 ----------
+    sync(force = false) {
+      if (this.phase !== 'playing') return
+      const now = Date.now()
+      if (!force && now - this.lastSyncAt < SYNC_THROTTLE_MS) return
+      this.lastSyncAt = now
+      this.sender({
+        ...this.base(),
+        type: 'state_sync',
+        hp: this.my.hp,
+        combo: this.my.combo,
+        wordIndex: this.my.wordIndex,
+        totalDealt: this.my.totalDealt,
+        ts: now,
+      })
+    },
 
-  function onOpponentLeft() {
-    if (phase.value === 'lobby') {
-      oppReady.value = false
-      return
-    }
-    if (phase.value === 'finished') {
-      oppRematch.value = false
-      return
-    }
-    // countdown / playing: 10秒の復帰猶予 → 不戦勝
-    graceRemaining.value = FORFEIT_GRACE_SEC
-    graceTimer = setInterval(() => {
-      if (graceRemaining.value === null) return
-      graceRemaining.value--
-      if (graceRemaining.value <= 0) {
-        finish('win', 'forfeit')
+    finish(outcome: BattleOutcome, reason: BattleResult['reason']) {
+      if (this.result) return
+      this.clearTimers()
+      this.result = { outcome, reason }
+      this.finishedAt = Date.now()
+      this.phase = 'finished'
+    },
+
+    // ---------- 切断処理 ----------
+
+    onOpponentLeft() {
+      if (this.phase === 'lobby') {
+        this.oppReady = false
+        return
       }
-    }, 1000)
-  }
-
-  return {
-    phase,
-    matchUid,
-    matchWords,
-    startAt,
-    my,
-    opp,
-    myReady,
-    oppReady,
-    myRematch,
-    oppRematch,
-    result,
-    finishedAt,
-    durationMs,
-    graceRemaining,
-    currentWord,
-    attackFx,
-    hitFx,
-    init,
-    reset,
-    setReady,
-    onWordTyped,
-    onMiss,
-    onRemoteEvent,
-    onOpponentLeft,
-    requestRematch,
-  }
+      if (this.phase === 'finished') {
+        this.oppRematch = false
+        return
+      }
+      // countdown / playing: 10秒の復帰猶予 → 不戦勝
+      this.graceRemaining = FORFEIT_GRACE_SEC
+      this.graceTimer = setInterval(() => {
+        if (this.graceRemaining === null) return
+        this.graceRemaining--
+        if (this.graceRemaining <= 0) {
+          this.finish('win', 'forfeit')
+        }
+      }, 1000)
+    },
+  },
 })
