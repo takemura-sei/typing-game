@@ -1,10 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import type { GameEvent } from '../app/types/events'
-import type { Word } from '../app/types/game'
+import type { TypingWordResult, Word } from '../app/types/game'
 import { useBattleStore } from '../app/stores/battle'
 import { useWordsStore } from '../app/stores/words'
-import type { TypingWordResult } from '../app/composables/use-typing-engine'
 
 /**
  * 2つのbattleストア(Piniaインスタンス2つ=2プレイヤー)をループバック直結して

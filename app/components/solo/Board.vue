@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Word } from '~/types/game'
-import type { WordsSource } from '~/stores/words'
+import type { WordsSource } from '~/types/words'
 
 defineProps<{
   sandbagHp: number

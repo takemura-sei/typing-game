@@ -1,8 +1,7 @@
 import { defineStore } from 'pinia'
 import { loadWords as loadWordsService } from '../services/words'
 import type { Word } from '../types/game'
-
-export type WordsSource = 'db' | 'fallback' | 'loading'
+import type { WordsSource } from '../types/words'
 
 /** お題の取得。wordsテーブルから読み、失敗時はローカルフォールバック */
 export const useWordsStore = defineStore('words', {

@@ -1,19 +1,13 @@
 import { defineStore } from 'pinia'
 import type { AttackEvent, GameEvent, GameStartEvent, StateSyncEvent } from '../types/events'
 import { PROTOCOL_VERSION } from '../types/events'
-import type { GamePhase, PlayerState, Word } from '../types/game'
+import type { BattleEffect, BattleOutcome, BattleResult } from '../types/battle'
+import type { GamePhase, PlayerState, TypingWordResult, Word } from '../types/game'
 import { createPlayerState, INITIAL_HP } from '../types/game'
-import { resolveAttack, type BattleEffect } from '../utils/battle/damage'
+import type { RoomRole } from '../types/room'
+import { resolveAttack } from '../utils/battle/damage'
 import { acceptTotalDealt, judgeSimultaneousKo } from '../utils/battle/protocol'
-import type { RoomRole } from '../composables/use-battle-room'
-import type { TypingWordResult } from '../composables/use-typing-engine'
 import { useWordsStore } from './words'
-
-export type BattleOutcome = 'win' | 'loss' | 'draw'
-export interface BattleResult {
-  outcome: BattleOutcome
-  reason: 'hp_zero' | 'forfeit'
-}
 
 export interface BattleInitOptions {
   role: RoomRole

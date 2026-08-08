@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { toResultCode, useResultsStore, type MatchRecord } from '../app/stores/results'
+import { toResultCode, useResultsStore } from '../app/stores/results'
+import type { MatchRecord } from '../app/types/results'
 
 describe('toResultCode', () => {
   it('通常勝敗はoutcomeそのまま', () => {

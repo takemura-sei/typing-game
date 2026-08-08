@@ -21,6 +21,14 @@ export interface PlayerState {
   missCount: number
 }
 
+/** 1単語の入力結果(タイピング完了イベント用) */
+export interface TypingWordResult {
+  word: Word
+  elapsedMs: number
+  keystrokes: number
+  misses: number
+}
+
 export const INITIAL_HP = 100
 
 export function createPlayerState(): PlayerState {
