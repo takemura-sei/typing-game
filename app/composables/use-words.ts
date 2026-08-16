@@ -14,5 +14,6 @@ export function useWords() {
     source,
     loadWords: store.loadWords,
     shuffled: store.shuffled,
+    pickForTier: store.pickForTier,
   }
 }

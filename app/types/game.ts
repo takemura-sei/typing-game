@@ -9,6 +9,9 @@ export interface Word {
   difficulty: number
 }
 
+/** お題の難易度層(1=易しい, 3=難しい)。comboToTierでコンボ数から導出する */
+export type DifficultyTier = 1 | 2 | 3
+
 /** プレイヤーの対戦中状態 */
 export interface PlayerState {
   hp: number

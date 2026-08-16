@@ -93,10 +93,9 @@ await send(guest, { type: 'ready' })
 await waitFor(host, 'ready')
 check('ready がホストに届く', true)
 
-const words = [{ id: 1, display: '寿司', reading: 'すし', difficulty: 1 }]
-await send(host, { type: 'game_start', matchUid: 'test-uid', words, startAt: Date.now() + 3500 })
+await send(host, { type: 'game_start', matchUid: 'test-uid', startAt: Date.now() + 3500 })
 const gs = await waitFor(guest, 'game_start')
-check('game_start がゲストに届く(お題同梱)', gs.words?.[0]?.reading === 'すし')
+check('game_start がゲストに届く', gs.matchUid === 'test-uid' && typeof gs.startAt === 'number')
 
 // attack(累積値) → 相手側で受信
 await send(guest, { type: 'attack', seq: 1, kind: 'normal', damage: 10, totalDealt: 10, combo: 1, ts: Date.now() })

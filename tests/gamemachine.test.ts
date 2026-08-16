@@ -19,16 +19,18 @@ const WORDS: Word[] = Array.from({ length: 50 }, (_, i) => ({
 
 type Battle = ReturnType<typeof useBattleStore>
 
-function makePair() {
+function makePair(pool: Word[] = WORDS) {
   // プレイヤーごとに独立したPiniaインスタンスを持たせる
-  const make = (pool: Word[]) => {
+  const make = () => {
     setActivePinia(createPinia())
     const words = useWordsStore()
     words.words = pool
     return useBattleStore()
   }
-  const host = make(WORDS)
-  const guest = make([])
+  const host = make()
+  // 新設計では各クライアントが自分のプールから独立に出題を選ぶため、
+  // guestも本番同様(room/[code].vueで両者が独立にloadWords()する)自前のプールが必要
+  const guest = make()
 
   // 相互接続: 送信は相手のonRemoteEventへ配送(再入はキューで直列化)
   const inbox: { to: Battle; event: GameEvent }[] = []
@@ -76,17 +78,19 @@ afterEach(() => {
 })
 
 describe('開始同期', () => {
-  it('両者readyでhostが開始し、同じお題列・matchUidでplayingになる', () => {
+  it('両者readyでhostが開始し、同じmatchUidでplayingになる', () => {
     const pair = makePair()
     pair.guest.setReady()
     pair.host.setReady()
     expect(pair.host.phase).toBe('countdown')
     expect(pair.guest.phase).toBe('countdown')
     expect(pair.guest.matchUid).toBe(pair.host.matchUid)
-    expect(pair.guest.matchWords.map((w) => w.id)).toEqual(pair.host.matchWords.map((w) => w.id))
     vi.advanceTimersByTime(3600)
     expect(pair.host.phase).toBe('playing')
     expect(pair.guest.phase).toBe('playing')
+    // お題は各自が自分のコンボに応じてローカルに選ぶため、内容の一致は保証しない
+    expect(pair.host.currentWord).not.toBeNull()
+    expect(pair.guest.currentWord).not.toBeNull()
   })
 })
 
@@ -125,6 +129,61 @@ describe('攻撃とHP権威モデル', () => {
     expect(pair.guest.result?.outcome).toBe('loss')
     expect(pair.host.result?.outcome).toBe('win')
     expect(pair.host.phase).toBe('finished')
+  })
+})
+
+describe('コンボ連動の難易度', () => {
+  // difficultyの層ごとに複数語を用意(readingは短く揃え、コンボ倍率だけで
+  // 与ダメージが伸びすぎてHP0判定のタイマーに干渉しないようにする)
+  const TIERED_WORDS: Word[] = [
+    { id: 1, display: 'A', reading: 'あ', difficulty: 1 },
+    { id: 2, display: 'B', reading: 'い', difficulty: 1 },
+    { id: 3, display: 'C', reading: 'う', difficulty: 1 },
+    { id: 4, display: 'D', reading: 'え', difficulty: 2 },
+    { id: 5, display: 'E', reading: 'お', difficulty: 2 },
+    { id: 6, display: 'F', reading: 'か', difficulty: 2 },
+    { id: 7, display: 'G', reading: 'き', difficulty: 3 },
+    { id: 8, display: 'H', reading: 'く', difficulty: 3 },
+    { id: 9, display: 'I', reading: 'け', difficulty: 3 },
+  ]
+
+  it('コンボが伸びるほど出題の難易度が上がり、ミスでtier1に戻る', () => {
+    const pair = makePair(TIERED_WORDS)
+    startMatch(pair)
+    // 時間は進めない: 相手の瀕死/撃破に伴うタイマー(同時KO猶予等)がここでは
+    // 不要に発火し、host側のphaseを'finished'にしてonWordTypedを止めてしまうため
+    expect(pair.host.currentWord!.difficulty).toBe(1) // 開始直後はtier1(combo=0)
+
+    // combo 1〜4: 閾値(5)未満なのでtier1のまま
+    for (let i = 0; i < 4; i++) {
+      typeOneWord(pair.host)
+      expect(pair.host.currentWord!.difficulty).toBe(1)
+    }
+
+    // 5語目でcombo=5に到達 → 次の出題はtier2
+    typeOneWord(pair.host)
+    expect(pair.host.my.combo).toBe(5)
+    expect(pair.host.currentWord!.difficulty).toBe(2)
+
+    // combo 6〜14: 閾値(15)未満なのでtier2のまま
+    for (let i = 0; i < 9; i++) {
+      typeOneWord(pair.host)
+      expect(pair.host.currentWord!.difficulty).toBe(2)
+    }
+    expect(pair.host.my.combo).toBe(14)
+
+    // 15語目でcombo=15に到達 → 次の出題はtier3
+    typeOneWord(pair.host)
+    expect(pair.host.my.combo).toBe(15)
+    expect(pair.host.currentWord!.difficulty).toBe(3)
+
+    // ミスでコンボが切れても、今出ている(tier3の)お題自体は変わらない。
+    // それを打ち切った直後からtier1に戻る
+    pair.host.onMiss()
+    expect(pair.host.my.combo).toBe(0)
+    typeOneWord(pair.host)
+    expect(pair.host.my.combo).toBe(1)
+    expect(pair.host.currentWord!.difficulty).toBe(1)
   })
 })
 
@@ -213,6 +272,6 @@ describe('ストアのリセット', () => {
     expect(pair.host.phase).toBe('lobby')
     expect(pair.host.my.hp).toBe(100)
     expect(pair.host.matchUid).toBeNull()
-    expect(pair.host.matchWords).toEqual([])
+    expect(pair.host.currentWord).toBeNull()
   })
 })

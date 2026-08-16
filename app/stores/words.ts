@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 import { loadWords as loadWordsService } from '../services/words'
-import type { Word } from '../types/game'
+import type { DifficultyTier, Word } from '../types/game'
 import type { WordsSource } from '../types/words'
+import { pickWordForTier } from '../utils/battle/tier'
 
 /** お題の取得。wordsテーブルから読み、失敗時はローカルフォールバック */
 export const useWordsStore = defineStore('words', {
@@ -25,6 +26,11 @@ export const useWordsStore = defineStore('words', {
         ;[list[i], list[j]] = [list[j]!, list[i]!]
       }
       return list
+    },
+
+    /** コンボ数に応じた難易度層から1語選ぶ(直前語の連続回避つき) */
+    pickForTier(tier: DifficultyTier, excludeId: number | null = null): Word | null {
+      return pickWordForTier(this.words, tier, excludeId)
     },
   },
 })
