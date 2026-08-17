@@ -13,7 +13,6 @@ export function useWords() {
     words,
     source,
     loadWords: store.loadWords,
-    shuffled: store.shuffled,
     pickForTier: store.pickForTier,
   }
 }
