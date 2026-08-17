@@ -1,5 +1,3 @@
-import type { Word } from './game'
-
 /**
  * Realtime Broadcastで交換するイベントプロトコル。
  * - 全イベントに v(バージョン)と from(送信者userId)を付ける
@@ -35,11 +33,10 @@ export interface ReadyEvent extends BaseEvent {
   type: 'ready'
 }
 
-/** ホスト→ゲスト: 対戦開始。お題列を同梱して両者の出題を一致させる */
+/** ホスト→ゲスト: 対戦開始。開始時刻のみ同期(お題は各クライアントが自分のコンボに応じてローカルに選ぶ) */
 export interface GameStartEvent extends BaseEvent {
   type: 'game_start'
   matchUid: string
-  words: Word[]
   /** 両者共通の開始時刻(epoch ms)。時計スキューは数百ms許容 */
   startAt: number
 }

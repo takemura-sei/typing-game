@@ -1,4 +1,4 @@
-import type { ResultCode } from '../services/results'
+import type { ResultCode } from '../types/results'
 
 export const RESULT_LABEL: Record<ResultCode, { text: string; class: string }> = {
   win: { text: '勝利', class: 'text-amber-300' },

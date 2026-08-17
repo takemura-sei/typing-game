@@ -1,3 +1,4 @@
+import type { BattleEffect } from '../../types/battle'
 import type { Word } from '../../types/game'
 
 /**
@@ -14,10 +15,6 @@ export interface AttackContext {
   /** 単語の打ち切りにかかったms */
   elapsedMs: number
 }
-
-export type BattleEffect =
-  | { type: 'screen_shake'; power: number }
-  | { type: 'cutin'; id: string } // 必殺技カットイン等(将来)
 
 export interface AttackOutcome {
   damage: number

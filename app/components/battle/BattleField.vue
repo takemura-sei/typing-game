@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import type { BattleEffect } from '~/types/battle'
 import type { PlayerState, Word } from '~/types/game'
-import type { BattleEffect } from '~/utils/battle/damage'
 
 const props = defineProps<{
   myName: string

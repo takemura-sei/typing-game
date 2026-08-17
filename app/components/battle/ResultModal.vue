@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { BattleResult } from '~/stores/battle'
+import type { BattleResult } from '~/types/battle'
 
 const props = defineProps<{
   result: BattleResult

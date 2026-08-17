@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { loadWords as loadWordsService } from '../services/words'
-import type { Word } from '../types/game'
-
-export type WordsSource = 'db' | 'fallback' | 'loading'
+import type { DifficultyTier, Word } from '../types/game'
+import type { WordsSource } from '../types/words'
+import { pickWordForTier } from '../utils/battle/tier'
 
 /** お題の取得。wordsテーブルから読み、失敗時はローカルフォールバック */
 export const useWordsStore = defineStore('words', {
@@ -18,14 +18,9 @@ export const useWordsStore = defineStore('words', {
       this.source = result.source
     },
 
-    /** シャッフルした出題列を返す */
-    shuffled(): Word[] {
-      const list = [...this.words]
-      for (let i = list.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1))
-        ;[list[i], list[j]] = [list[j]!, list[i]!]
-      }
-      return list
+    /** コンボ数に応じた難易度層から1語選ぶ(直前語の連続回避つき) */
+    pickForTier(tier: DifficultyTier, excludeId: number | null = null): Word | null {
+      return pickWordForTier(this.words, tier, excludeId)
     },
   },
 })

@@ -1,19 +1,14 @@
 import { defineStore } from 'pinia'
 import type { AttackEvent, GameEvent, GameStartEvent, StateSyncEvent } from '../types/events'
 import { PROTOCOL_VERSION } from '../types/events'
-import type { GamePhase, PlayerState, Word } from '../types/game'
+import type { BattleEffect, BattleOutcome, BattleResult } from '../types/battle'
+import type { GamePhase, PlayerState, TypingWordResult, Word } from '../types/game'
 import { createPlayerState, INITIAL_HP } from '../types/game'
-import { resolveAttack, type BattleEffect } from '../utils/battle/damage'
+import type { RoomRole } from '../types/room'
+import { resolveAttack } from '../utils/battle/damage'
 import { acceptTotalDealt, judgeSimultaneousKo } from '../utils/battle/protocol'
-import type { RoomRole } from '../composables/use-battle-room'
-import type { TypingWordResult } from '../composables/use-typing-engine'
+import { comboToTier } from '../utils/battle/tier'
 import { useWordsStore } from './words'
-
-export type BattleOutcome = 'win' | 'loss' | 'draw'
-export interface BattleResult {
-  outcome: BattleOutcome
-  reason: 'hp_zero' | 'forfeit'
-}
 
 export interface BattleInitOptions {
   role: RoomRole
@@ -23,7 +18,6 @@ export interface BattleInitOptions {
 }
 
 const COUNTDOWN_MS = 3500
-const MATCH_WORD_COUNT = 40
 const SYNC_THROTTLE_MS = 200
 const SIMUL_KO_WAIT_MS = 500
 const FORFEIT_GRACE_SEC = 10
@@ -31,7 +25,8 @@ const FORFEIT_GRACE_SEC = 10
 interface BattleState {
   phase: GamePhase
   matchUid: string | null
-  matchWords: Word[]
+  /** 自分に出題中の1語。コンボに応じてbeginCountdown/onWordTypedで選び直す */
+  myWord: Word | null
   startAt: number
   my: PlayerState
   opp: PlayerState
@@ -75,7 +70,7 @@ export const useBattleStore = defineStore('battle', {
   state: (): BattleState => ({
     phase: 'lobby',
     matchUid: null,
-    matchWords: [],
+    myWord: null,
     startAt: 0,
     my: createPlayerState(),
     opp: createPlayerState(),
@@ -106,9 +101,7 @@ export const useBattleStore = defineStore('battle', {
   getters: {
     /** 現在出題中のお題。playing以外はnull */
     currentWord(state): Word | null {
-      return state.phase === 'playing' && state.matchWords.length > 0
-        ? state.matchWords[state.my.wordIndex % state.matchWords.length]!
-        : null
+      return state.phase === 'playing' ? state.myWord : null
     },
 
     /** 試合時間(ms)。開始前に終了(カウントダウン中の不戦勝等)は0 */
@@ -164,7 +157,7 @@ export const useBattleStore = defineStore('battle', {
       this.resetMatchState()
       this.phase = 'lobby'
       this.matchUid = null
-      this.matchWords = []
+      this.myWord = null
       this.startAt = 0
     },
 
@@ -181,21 +174,20 @@ export const useBattleStore = defineStore('battle', {
       if (this.role !== 'host') return
       if (this.phase !== 'lobby' || !this.myReady || !this.oppReady) return
       const wordsStore = useWordsStore()
-      const pool = wordsStore.shuffled()
-      if (pool.length === 0) return
-      const words = pool.slice(0, MATCH_WORD_COUNT)
+      if (wordsStore.words.length === 0) return
       const uid = crypto.randomUUID()
       const at = Date.now() + COUNTDOWN_MS
-      this.sender({ ...this.base(), type: 'game_start', matchUid: uid, words, startAt: at })
-      this.beginCountdown(uid, words, at)
+      this.sender({ ...this.base(), type: 'game_start', matchUid: uid, startAt: at })
+      this.beginCountdown(uid, at)
     },
 
-    beginCountdown(uid: string, words: Word[], at: number) {
+    beginCountdown(uid: string, at: number) {
       this.clearTimers()
       this.resetMatchState()
       this.matchUid = uid
-      this.matchWords = words
       this.startAt = at
+      const wordsStore = useWordsStore()
+      this.myWord = wordsStore.pickForTier(comboToTier(this.my.combo))
       this.phase = 'countdown'
       this.countdownTimer = setTimeout(() => {
         if (this.phase === 'countdown') this.phase = 'playing'
@@ -208,6 +200,8 @@ export const useBattleStore = defineStore('battle', {
       this.my.maxCombo = Math.max(this.my.maxCombo, this.my.combo)
       this.my.wordsTyped++
       this.my.wordIndex++
+      const wordsStore = useWordsStore()
+      this.myWord = wordsStore.pickForTier(comboToTier(this.my.combo), this.myWord?.id ?? null)
 
       const outcome = resolveAttack('normal', {
         word: typing.word,
@@ -266,7 +260,7 @@ export const useBattleStore = defineStore('battle', {
         case 'game_start':
           if (this.role === 'guest') {
             const e = event as GameStartEvent
-            this.beginCountdown(e.matchUid, e.words, e.startAt)
+            this.beginCountdown(e.matchUid, e.startAt)
           }
           break
         case 'attack':

@@ -3,13 +3,10 @@ import {
   loadHistory as loadHistoryService,
   saveResult as saveResultService,
   toResultCode,
-  type MatchRecord,
-  type ResultCode,
-  type SaveResultInput,
 } from '../services/results'
+import type { MatchRecord, SaveResultInput } from '../types/results'
 
 export { toResultCode }
-export type { MatchRecord, ResultCode, SaveResultInput }
 
 /** 対戦結果の保存と戦績の取得。1試合につき自分視点の1行をinsertする */
 export const useResultsStore = defineStore('results', {

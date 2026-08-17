@@ -1,20 +1,17 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { resolveAttack } from '../utils/battle/damage'
+import { comboToTier } from '../utils/battle/tier'
 import { INITIAL_HP } from '../types/game'
-import type { Word } from '../types/game'
 import { useWords } from './use-words'
 import { useTypingEngine } from './use-typing-engine'
 
 /**
  * ソロ練習(サンドバッグ相手の一人打ち)の状態管理。
  * setup内で呼ぶこと(onMounted/onBeforeUnmountを内部で使う)。
+ * 出題は対戦と同じくコンボ数に応じた難易度層(comboToTier)から動的に選ぶ。
  */
 export function useSoloPractice() {
   const words = useWords()
-
-  // 出題
-  const queue = ref<Word[]>([])
-  const queueIndex = ref(0)
 
   // サンドバッグ(対戦のHPバー/ダメージ感覚をソロで確認する)
   const sandbagHp = ref(INITIAL_HP)
@@ -77,21 +74,19 @@ export function useSoloPractice() {
     },
   })
 
+  /** コンボ数に応じた難易度層から次の1語を選んで出題する(直前語の連続回避つき) */
   function nextWord() {
-    if (queue.value.length === 0) return
-    queueIndex.value = (queueIndex.value + 1) % queue.value.length
-    engine.loadWord(queue.value[queueIndex.value]!)
+    const tier = comboToTier(combo.value)
+    const next = words.pickForTier(tier, engine.currentWord.value?.id ?? null)
+    if (next) engine.loadWord(next)
   }
 
   onMounted(async () => {
     await words.loadWords()
-    queue.value = words.shuffled()
     sessionStartedAt.value = performance.now()
     now.value = sessionStartedAt.value
     clockTimer = setInterval(() => (now.value = performance.now()), 1000)
-    if (queue.value.length > 0) {
-      engine.loadWord(queue.value[0]!)
-    }
+    nextWord()
   })
   onBeforeUnmount(() => {
     if (clockTimer) clearInterval(clockTimer)
