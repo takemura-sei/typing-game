@@ -7,14 +7,7 @@ import {
   type KeyResult,
   type MatcherState,
 } from '../utils/romaji/matcher'
-import type { Word } from '../types/game'
-
-export interface TypingWordResult {
-  word: Word
-  elapsedMs: number
-  keystrokes: number
-  misses: number
-}
+import type { TypingWordResult, Word } from '../types/game'
 
 export interface TypingEngineHooks {
   onHit?: () => void

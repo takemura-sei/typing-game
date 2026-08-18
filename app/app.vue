@@ -1,7 +1,7 @@
 <script setup lang="ts">
-const { ensureSignedIn } = useAuth()
+const authStore = useAuthStore()
 onMounted(() => {
-  ensureSignedIn()
+  authStore.ensureSignedIn()
 })
 </script>
 

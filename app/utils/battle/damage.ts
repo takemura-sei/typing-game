@@ -1,3 +1,4 @@
+import type { BattleEffect } from '../../types/battle'
 import type { Word } from '../../types/game'
 
 /**
@@ -15,10 +16,6 @@ export interface AttackContext {
   elapsedMs: number
 }
 
-export type BattleEffect =
-  | { type: 'screen_shake'; power: number }
-  | { type: 'cutin'; id: string } // 必殺技カットイン等(将来)
-
 export interface AttackOutcome {
   damage: number
   effects: BattleEffect[]
@@ -28,13 +25,13 @@ export type AttackKind = 'normal' // 将来: | 'special_deathblow'
 
 /** バランス調整はここに集約 */
 export const DAMAGE_CONFIG = {
-  baseFlat: 8,
+  baseFlat: 6,
   /** 読み文字数 n 文字ごとに +1 */
   lengthDivisor: 3,
   /** 1コンボあたりの倍率上昇 */
-  comboStep: 0.05,
-  /** 倍率が上がるコンボの上限(20コンボで2倍) */
-  comboCap: 20,
+  comboStep: 0.04,
+  /** 倍率が上がるコンボの上限(15コンボで1.6倍) */
+  comboCap: 15,
   /** screen_shake が付き始めるコンボ */
   shakeThreshold: 10,
 } as const
