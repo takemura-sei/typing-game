@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import type { GameEvent } from '../app/types/events'
 import type { TypingWordResult, Word } from '../app/types/game'
+import { INITIAL_HP } from '../app/types/game'
 import { useBattleStore } from '../app/stores/battle'
 import { useWordsStore } from '../app/stores/words'
 
@@ -13,7 +14,7 @@ import { useWordsStore } from '../app/stores/words'
 const WORDS: Word[] = Array.from({ length: 50 }, (_, i) => ({
   id: i + 1,
   display: `お題${i + 1}`,
-  reading: 'すし', // base 8 + floor(2/3)=0 → 8ダメージ(コンボ倍率で増加)
+  reading: 'すし', // base 6 + floor(2/3)=0 → 6ダメージ(コンボ倍率で増加)
   difficulty: 1,
 }))
 
@@ -99,7 +100,7 @@ describe('攻撃とHP権威モデル', () => {
     const pair = makePair()
     startMatch(pair)
     typeOneWord(pair.host)
-    expect(pair.guest.my.hp).toBe(100 - pair.host.my.totalDealt)
+    expect(pair.guest.my.hp).toBe(INITIAL_HP - pair.host.my.totalDealt)
     // 防御側のstate_syncで攻撃側の相手HP表示も一致する
     expect(pair.host.opp.hp).toBe(pair.guest.my.hp)
   })
@@ -108,11 +109,15 @@ describe('攻撃とHP権威モデル', () => {
     const pair = makePair()
     startMatch(pair)
     typeOneWord(pair.host)
-    const d1 = pair.host.my.totalDealt
+    const hit1 = pair.host.my.totalDealt
+    // 1打目と隣接する2打目は倍率の伸び幅が小さく端数処理で同額になり得るため、
+    // 離れたコンボ(3打目)と比較して「コンボが伸びるほど痛い」ことを確認する
     vi.advanceTimersByTime(300) // syncスロットル回避
     typeOneWord(pair.host)
-    const d2 = pair.host.my.totalDealt - d1
-    expect(d2).toBeGreaterThan(d1) // 2コンボ目の方が痛い
+    vi.advanceTimersByTime(300)
+    typeOneWord(pair.host)
+    const hit3 = pair.host.my.totalDealt - hit1 // 2,3打目の合計ダメージ
+    expect(hit3).toBeGreaterThan(hit1 * 2) // 2発分より多い=倍率が上がっている
     pair.host.onMiss()
     expect(pair.host.my.combo).toBe(0)
   })
@@ -120,7 +125,8 @@ describe('攻撃とHP権威モデル', () => {
   it('HP0で敗北/勝利が確定する', () => {
     const pair = makePair()
     startMatch(pair)
-    for (let i = 0; i < 20 && pair.guest.my.hp > 0; i++) {
+    // INITIAL_HPを打ち切るのに十分な回数(最低ダメージでも打ち切れる上限)まで回す
+    for (let i = 0; i < INITIAL_HP && pair.guest.my.hp > 0; i++) {
       vi.advanceTimersByTime(300)
       typeOneWord(pair.host)
     }
@@ -187,30 +193,41 @@ describe('コンボ連動の難易度', () => {
   })
 })
 
+/** MAX_DELTA_PER_ATTACK(60)を超えないよう、totalDealtを段階的に積み上げて送る */
+function rampTotalDealt(receiver: Battle, fromUserId: string, targetTotal: number) {
+  const STEP = 60
+  let sent = 0
+  let seq = 0
+  while (sent < targetTotal) {
+    sent = Math.min(sent + STEP, targetTotal)
+    seq++
+    receiver.onRemoteEvent({
+      v: 1, from: fromUserId, type: 'attack',
+      seq, kind: 'normal', damage: 0, totalDealt: sent, combo: 1, ts: Date.now(),
+    })
+  }
+}
+
 describe('同時KO', () => {
   it('300ms以内に両者が死んだら引き分け', () => {
     const pair = makePair()
     startMatch(pair)
-    // 両者を瀕死にする(相互に大ダメージを受けた状態を注入)
-    pair.host.onRemoteEvent({
-      v: 1, from: 'user-guest', type: 'attack',
-      seq: 1, kind: 'normal', damage: 5, totalDealt: 55, combo: 1, ts: Date.now(),
-    })
-    pair.guest.onRemoteEvent({
-      v: 1, from: 'user-host', type: 'attack',
-      seq: 1, kind: 'normal', damage: 5, totalDealt: 55, combo: 1, ts: Date.now(),
-    })
+    // 両者を瀕死(残りHP45)にする(相互に大ダメージを受けた状態を注入。
+    // MAX_DELTA_PER_ATTACKのクランプがあるため一気には送れず段階的に積み上げる)
+    const nearDeathTotal = INITIAL_HP - 45
+    rampTotalDealt(pair.host, 'user-guest', nearDeathTotal)
+    rampTotalDealt(pair.guest, 'user-host', nearDeathTotal)
     expect(pair.host.my.hp).toBe(45)
     expect(pair.guest.my.hp).toBe(45)
-    // ほぼ同時にとどめ(累積60超えクランプに注意: 55+45=100 は +45増分でOK)
+    // ほぼ同時にとどめ(累積60超えクランプに注意: 残り45なので+45増分でOK)
     pair.host.onRemoteEvent({
       v: 1, from: 'user-guest', type: 'attack',
-      seq: 2, kind: 'normal', damage: 45, totalDealt: 100, combo: 2, ts: Date.now(),
+      seq: 2, kind: 'normal', damage: 45, totalDealt: INITIAL_HP, combo: 2, ts: Date.now(),
     })
     vi.advanceTimersByTime(100)
     pair.guest.onRemoteEvent({
       v: 1, from: 'user-host', type: 'attack',
-      seq: 2, kind: 'normal', damage: 45, totalDealt: 100, combo: 2, ts: Date.now(),
+      seq: 2, kind: 'normal', damage: 45, totalDealt: INITIAL_HP, combo: 2, ts: Date.now(),
     })
     vi.advanceTimersByTime(600)
     expect(pair.host.result?.outcome).toBe('draw')
@@ -244,7 +261,7 @@ describe('リマッチ', () => {
     startMatch(pair)
     const firstUid = pair.host.matchUid
     // ホストが押し切って勝つ
-    for (let i = 0; i < 20 && pair.guest.my.hp > 0; i++) {
+    for (let i = 0; i < INITIAL_HP && pair.guest.my.hp > 0; i++) {
       vi.advanceTimersByTime(300)
       typeOneWord(pair.host)
     }
@@ -256,8 +273,8 @@ describe('リマッチ', () => {
     expect(pair.host.phase).toBe('countdown')
     expect(pair.guest.phase).toBe('countdown')
     expect(pair.host.matchUid).not.toBe(firstUid)
-    expect(pair.host.my.hp).toBe(100)
-    expect(pair.guest.my.hp).toBe(100)
+    expect(pair.host.my.hp).toBe(INITIAL_HP)
+    expect(pair.guest.my.hp).toBe(INITIAL_HP)
     vi.advanceTimersByTime(3600)
     expect(pair.guest.phase).toBe('playing')
   })
@@ -270,7 +287,7 @@ describe('ストアのリセット', () => {
     typeOneWord(pair.host)
     pair.host.reset()
     expect(pair.host.phase).toBe('lobby')
-    expect(pair.host.my.hp).toBe(100)
+    expect(pair.host.my.hp).toBe(INITIAL_HP)
     expect(pair.host.matchUid).toBeNull()
     expect(pair.host.currentWord).toBeNull()
   })

@@ -32,7 +32,7 @@ export interface TypingWordResult {
   misses: number
 }
 
-export const INITIAL_HP = 100
+export const INITIAL_HP = 250
 
 export function createPlayerState(): PlayerState {
   return {
